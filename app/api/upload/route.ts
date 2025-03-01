@@ -1,15 +1,15 @@
 // app/api/upload/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { auth as clerkAuth } from "@clerk/nextjs/server";
+import { getAuth } from "@clerk/nextjs/server";
 import { db } from '@/lib/db';
 import { documents, users } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication directly
-    const authResult = await clerkAuth();
-    const clerkId = authResult.userId;
+    // Use getAuth with the request object
+    const session = getAuth(request);
+    const clerkId = session.userId;
     
     if (!clerkId) {
       return NextResponse.json(
@@ -27,11 +27,12 @@ export async function POST(request: NextRequest) {
     
     if (!userResults.length) {
       // Create the user if they don't exist in our database yet
+      // Since we don't have access to session claims, we'll use placeholder values
       const [newUser] = await db.insert(users)
         .values({
           clerkId,
-          email: authResult.sessionClaims?.email as string || 'unknown@example.com',
-          name: authResult.sessionClaims?.name as string || 'User',
+          email: 'unknown@example.com', // You might want to fetch this from Clerk API
+          name: 'User', // You might want to fetch this from Clerk API
         })
         .returning();
         

@@ -1,197 +1,74 @@
 // lib/actions/reports.ts
 'use server';
 
-import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
-import { documents, reports, reportDocuments, users } from '@/lib/db/schema';
+import { reports, reportDocuments, documents, users } from '@/lib/db/schema';
 import { eq, inArray, desc } from 'drizzle-orm';
 import { nanoid } from 'nanoid';
-import { generateMedicalReport } from '@/lib/utils/medical-ai';
+import { ensureUserInDatabase } from '@/lib/user-utils';
+import { currentUser } from '@clerk/nextjs/server';
 
-type ReasoningLevel = 'standard' | 'deep' | 'comprehensive';
-
-/**
- * Get N most recent reports for the authenticated user
- */
 export async function getRecentReports(limit?: number) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) return [];
-
-    const clerkId = session.user.id;
-    const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
-    });
-    if (!userResults.length) return [];
-
-    const internalUserId = userResults[0].id;
-    const userReports = await db.query.reports.findMany({
-      where: eq(reports.userId, internalUserId),
-      orderBy: [desc(reports.createdAt)],
-      limit: limit,
-    });
-    return userReports || [];
-  } catch (error) {
-    console.error('Error fetching reports:', error);
-    return [];
-  }
-}
-
-/**
- * Get a single report by ID if the user owns it
- */
-export async function getReportById(id: string) {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) return null;
-
-    const clerkId = session.user.id;
-    const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
-    });
-    if (!userResults.length) return null;
-
-    const internalUserId = userResults[0].id;
-    const report = await db.query.reports.findFirst({
-      where: eq(reports.id, id),
-    });
-
-    // Only return if belongs to user
-    if (report && report.userId === internalUserId) {
-      return report;
-    }
-    return null;
-  } catch (error) {
-    console.error('Error fetching report:', error);
-    return null;
-  }
-}
-
-/**
- * Generate a new report from documents, familyMember, etc.
- */
-export async function generateReport({
-  title,
-  documentIds,
-  familyMemberId,
-  notes,
-  reasoningLevel = 'deep'
-}: {
-  title: string;
-  documentIds: string[];
-  familyMemberId?: string;
-  notes?: string;
-  reasoningLevel?: ReasoningLevel;
-}) {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) {
-      return { success: false, error: 'Unauthorized' };
-    }
-
-    const clerkId = session.user.id;
-    const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
-    });
-
-    let internalUserId: string;
-    if (!userResults.length) {
-      // Create user if not in DB yet
-      const [newUser] = await db.insert(users).values({
-        clerkId,
-        email: session.user.email || 'unknown@example.com',
-        name: session.user.name || 'User',
-      }).returning();
-      internalUserId = newUser.id;
-    } else {
-      internalUserId = userResults[0].id;
-    }
-
-    // Fetch the docs
-    const selectedDocs = await db.query.documents.findMany({
-      where: inArray(documents.id, documentIds),
-    });
-    if (!selectedDocs.length) {
-      return { success: false, error: 'No valid documents found' };
-    }
-
-    const tokenBudgets: Record<ReasoningLevel, number> = {
-      standard: 4000,
-      deep: 8000,
-      comprehensive: 12000,
-    };
-
-    console.log('Generating report with docs:', selectedDocs.map(d => d.id));
-
-    // Use your AI function to generate the content
-    const reportContent = await generateMedicalReport(
-      selectedDocs,
-      notes || '',
-      tokenBudgets[reasoningLevel]
-    );
-    if (!reportContent) {
-      return { success: false, error: 'Failed to generate report content' };
-    }
-
-    // Trim a summary
-    const summary = reportContent.slice(0, 200) + 
-      (reportContent.length > 200 ? '...' : '');
-    const shareToken = nanoid(10);
-
-    // Insert the report
-    const [reportRecord] = await db.insert(reports)
-      .values({
-        userId: internalUserId,
-        familyMemberId: familyMemberId || null,
-        title,
-        content: reportContent,
-        summary,
-        status: 'complete',
-        shareToken,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .returning();
-
-    // Link docs to the report
-    for (const docId of documentIds) {
-      await db.insert(reportDocuments).values({
-        reportId: reportRecord.id,
-        documentId: docId,
+    // Get the user ID from the database
+    const userId = await ensureUserInDatabase();
+    
+    // If no user ID, try to create the user
+    if (!userId) {
+      // Get the user directly
+      const user = await currentUser();
+      
+      if (!user) {
+        return [];
+      }
+      
+      // Check if user exists
+      const userResults = await db.query.users.findMany({
+        where: eq(users.clerkId, user.id)
       });
+      
+      let internalUserId: string;
+      
+      if (!userResults.length) {
+        // Create the user
+        const [newUser] = await db.insert(users)
+          .values({
+            clerkId: user.id,
+            email: user.emailAddresses[0]?.emailAddress || 'unknown@example.com',
+            name: user.firstName + (user.lastName ? ` ${user.lastName}` : '') || 'User',
+          })
+          .returning();
+          
+        internalUserId = newUser.id;
+      } else {
+        internalUserId = userResults[0].id;
+      }
+      
+      // Query reports using the user's ID
+      const userReports = await db.query.reports.findMany({
+        where: eq(reports.userId, internalUserId),
+        orderBy: [desc(reports.createdAt)],
+        limit: limit
+      });
+      
+      return userReports;
     }
-
-    return { success: true, reportId: reportRecord.id, shareToken };
-  } catch (error) {
-    console.error('Report generation error:', error);
-    return { success: false, error: 'Failed to generate report: ' + (error as Error).message };
-  }
-}
-
-/**
- * Get all reports for the user
- */
-export async function getUserReports() {
-  try {
-    const session = await auth();
-    if (!session?.user?.id) return [];
-
-    const clerkId = session.user.id;
-    const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
-    });
-    if (!userResults.length) return [];
-
-    const internalUserId = userResults[0].id;
-    return await db.query.reports.findMany({
-      where: eq(reports.userId, internalUserId),
+    
+    // Query reports using the user's ID
+    const userReports = await db.query.reports.findMany({
+      where: eq(reports.userId, userId),
       orderBy: [desc(reports.createdAt)],
+      limit: limit
     });
+    
+    return userReports;
   } catch (error) {
     console.error('Error fetching reports:', error);
     return [];
   }
 }
+
+
 
 // // lib/actions/reports.ts
 // 'use server';

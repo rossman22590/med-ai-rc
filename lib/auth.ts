@@ -1,26 +1,17 @@
 // lib/auth.ts
-import { safeAuth, safeCurrentUser } from './safe-auth';
+import { getUser } from './safe-auth';
 
 export async function auth() {
   try {
-    // Use the safe version that properly handles headers
-    const authResult = await safeAuth();
-    const userId = authResult.userId;
-
-    if (!userId) {
-      return { user: null };
-    }
-
-    // Use the safe version that properly handles headers
-    const clerkUser = await safeCurrentUser();
-
+    const clerkUser = await getUser();
+    
     if (!clerkUser) {
       return { user: null };
     }
-
+    
     return {
       user: {
-        id: userId,
+        id: clerkUser.id,
         name: clerkUser.firstName + (clerkUser.lastName ? ` ${clerkUser.lastName}` : ''),
         email: clerkUser.emailAddresses[0]?.emailAddress,
       }
@@ -30,6 +21,7 @@ export async function auth() {
     return { user: null };
   }
 }
+
 
 
 

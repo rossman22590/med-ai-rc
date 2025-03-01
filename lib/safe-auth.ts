@@ -1,23 +1,13 @@
 // lib/safe-auth.ts
-import { auth as clerkAuth, currentUser as clerkCurrentUser } from '@clerk/nextjs';
+import { currentUser } from '@clerk/nextjs';
 
-// Safe version of auth() that properly handles headers
-export async function safeAuth() {
+// This function safely gets the current user without headers issues
+export async function getUser() {
   try {
-    return await clerkAuth();
+    return await currentUser();
   } catch (error) {
-    console.error('Error in safeAuth:', error);
-    throw error;
-  }
-}
-
-// Safe version of currentUser() that properly handles headers
-export async function safeCurrentUser() {
-  try {
-    return await clerkCurrentUser();
-  } catch (error) {
-    console.error('Error in safeCurrentUser:', error);
-    throw error;
+    console.error('Error getting user:', error);
+    return null;
   }
 }
 

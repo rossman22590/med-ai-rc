@@ -1,37 +1,35 @@
 // lib/actions/family.ts
-'use server';  // Add this line at the top
+'use server';
 
 import { db } from '@/lib/db';
 import { familyMembers, users } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
-import { currentUser } from '@clerk/nextjs';
+import { currentUser } from '@clerk/nextjs/server';
 
 export async function getFamilyMembers() {
   try {
-    // Get the authenticated user directly from Clerk
+    // Use currentUser() directly
     const user = await currentUser();
     
     if (!user) {
       return [];
     }
     
-    // First, look up the internal user ID (UUID) from the users table using Clerk ID
+    // Look up the internal user ID from the users table using Clerk ID
     const userResults = await db.query.users.findMany({
       where: eq(users.clerkId, user.id)
     });
     
-    // If the user doesn't exist in our database yet, return an empty array
+    // If the user doesn't exist in our database yet, return empty array
     if (!userResults.length) {
-      console.log(`User not found in database: ${user.id}`);
       return [];
     }
     
-    // Get the internal UUID for this user
-    const userId = userResults[0].id;
+    const internalUserId = userResults[0].id;
     
-    // Now use the correct UUID to query family members
+    // Query family members using the user's ID
     const members = await db.query.familyMembers.findMany({
-      where: eq(familyMembers.userId, userId)
+      where: eq(familyMembers.userId, internalUserId)
     });
     
     return members;
@@ -43,20 +41,20 @@ export async function getFamilyMembers() {
 
 export async function addFamilyMember(name: string, relation: string) {
   try {
-    // Get the authenticated user directly from Clerk
+    // Use currentUser() directly
     const user = await currentUser();
     
     if (!user) {
       throw new Error('Unauthorized');
     }
     
-    // First, look up the internal user ID (UUID) from the users table using Clerk ID
+    // Look up the internal user ID from the users table using Clerk ID
     const userResults = await db.query.users.findMany({
       where: eq(users.clerkId, user.id)
     });
     
     // If the user doesn't exist in our database yet, create a new record
-    let userId: string;
+    let internalUserId: string;
     
     if (!userResults.length) {
       // Get the user's email
@@ -73,15 +71,15 @@ export async function addFamilyMember(name: string, relation: string) {
         })
         .returning();
         
-      userId = newUser.id;
+      internalUserId = newUser.id;
     } else {
-      userId = userResults[0].id;
+      internalUserId = userResults[0].id;
     }
     
     // Add the family member with the correct UUID
     const [member] = await db.insert(familyMembers)
       .values({
-        userId,
+        userId: internalUserId,
         name,
         relation,
       })
@@ -96,14 +94,14 @@ export async function addFamilyMember(name: string, relation: string) {
 
 export async function deleteFamilyMember(id: string) {
   try {
-    // Get the authenticated user directly from Clerk
+    // Use currentUser() directly
     const user = await currentUser();
     
     if (!user) {
       throw new Error('Unauthorized');
     }
     
-    // First, look up the internal user ID (UUID) from the users table using Clerk ID
+    // Look up the internal user ID from the users table using Clerk ID
     const userResults = await db.query.users.findMany({
       where: eq(users.clerkId, user.id)
     });
@@ -112,13 +110,13 @@ export async function deleteFamilyMember(id: string) {
       throw new Error('User not found');
     }
     
-    const userId = userResults[0].id;
+    const internalUserId = userResults[0].id;
     
     // Verify ownership before deleting
     const memberToDelete = await db.query.familyMembers.findFirst({
       where: (members) => 
         eq(members.id, id) && 
-        eq(members.userId, userId)
+        eq(members.userId, internalUserId)
     });
     
     if (!memberToDelete) {
@@ -135,7 +133,6 @@ export async function deleteFamilyMember(id: string) {
     throw error;
   }
 }
-
 
 
 // // lib/actions/family.ts

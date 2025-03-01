@@ -1,36 +1,40 @@
 // lib/actions/documents.ts
 'use server';
 
-import { auth } from '@/lib/auth';
 import { db } from '@/lib/db';
 import { documents, users } from '@/lib/db/schema';
 import { eq, desc } from 'drizzle-orm';
+import { currentUser } from '@clerk/nextjs/server';
 
-/**
- * Fetches all user documents (or some limit) using the internal UUID
- */
 export async function getUserDocuments(limit?: number) {
   try {
-    const session = await auth(); // Call with no request if you're in a server action
-    if (!session?.user?.id) return [];
-
-    // Clerk ID
-    const clerkId = session.user.id;
-
-    // Convert Clerk ID -> internal UUID
+    // Use currentUser() instead of auth()
+    const user = await currentUser();
+    const clerkId = user?.id;
+    
+    if (!clerkId) {
+      return [];
+    }
+    
+    // Look up the internal user ID from the users table using Clerk ID
     const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
+      where: eq(users.clerkId, clerkId)
     });
-    if (!userResults.length) return [];
-
-    const userId = userResults[0].id;
-
-    // Query documents
+    
+    // If the user doesn't exist in our database yet, return empty array
+    if (!userResults.length) {
+      return [];
+    }
+    
+    const internalUserId = userResults[0].id;
+    
+    // Query documents using the user's ID
     const userDocs = await db.query.documents.findMany({
-      where: eq(documents.userId, userId),
+      where: eq(documents.userId, internalUserId),
       orderBy: [desc(documents.createdAt)],
-      limit: limit,
+      limit: limit
     });
+    
     return userDocs;
   } catch (error) {
     console.error('Error fetching documents:', error);
@@ -38,39 +42,49 @@ export async function getUserDocuments(limit?: number) {
   }
 }
 
-/**
- * Delete a document owned by the user, referencing internal UUID.
- */
 export async function deleteDocument(documentId: string) {
   try {
-    const session = await auth();
-    if (!session?.user?.id) throw new Error('Unauthorized');
-
-    // Clerk ID -> internal UUID
-    const clerkId = session.user.id;
-    const userResults = await db.query.users.findMany({
-      where: eq(users.clerkId, clerkId),
-    });
-    if (!userResults.length) throw new Error('User record not found');
-    const internalUserId = userResults[0].id;
-
-    // Check ownership
-    const [doc] = await db.query.documents.findMany({
-      where: eq(documents.id, documentId),
-    });
-    if (!doc) throw new Error('Document not found');
-    if (doc.userId !== internalUserId) {
-      throw new Error('Not your document');
+    // Use currentUser() instead of auth()
+    const user = await currentUser();
+    const clerkId = user?.id;
+    
+    if (!clerkId) {
+      throw new Error('Unauthorized');
     }
-
-    // Delete
-    await db.delete(documents).where(eq(documents.id, documentId));
+    
+    // Look up the internal user ID
+    const userResults = await db.query.users.findMany({
+      where: eq(users.clerkId, clerkId)
+    });
+    
+    if (!userResults.length) {
+      throw new Error('User not found');
+    }
+    
+    const internalUserId = userResults[0].id;
+    
+    // Check ownership
+    const doc = await db.query.documents.findFirst({
+      where: (docs) => 
+        eq(docs.id, documentId) && 
+        eq(docs.userId, internalUserId)
+    });
+    
+    if (!doc) {
+      throw new Error('Document not found or not authorized to delete');
+    }
+    
+    // Delete the document
+    await db.delete(documents)
+      .where(eq(documents.id, documentId));
+    
     return { success: true };
   } catch (error) {
     console.error('Error deleting document:', error);
     throw error;
   }
 }
+
 
 // // lib/actions/documents.ts
 // 'use server';
