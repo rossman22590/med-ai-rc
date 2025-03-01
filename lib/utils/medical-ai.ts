@@ -67,7 +67,7 @@ export async function generateMedicalReport(
     Provide a very brief (2-3 sentences) plain-language overview of the most critical information that someone would need to know immediately. This should be extremely concise and straightforward.
     
     ## COMPREHENSIVE ANALYSIS
-     Provide a detailed (1-2 paragraphs) plain-language overview of the most critical information that someone would need to know immediately. This should be extremely concise and straightforward.
+     Provide a detailed (4-6 paragraphs) plain-language overview of the most critical information that someone would need to know immediately. This should be extremely concise and straightforward.
     
     ### KEY FINDINGS
     Provide a detailed, exhaustive breakdown of all significant medical findings, organized by category (like "Blood Work", "Imaging", etc.). Use bullet points for clarity. Include all relevant details while still using accessible language.
