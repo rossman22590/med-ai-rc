@@ -59,7 +59,7 @@ export async function generateMedicalReport(
     ${combinedContent}
     ${contextInfo}
     
-    Please organize your response using markdown formatting as follows:
+    Never EVER make up ANY data , use only parsed data and Please organize your response using markdown formatting as follows:
 
     # Medical Report Analysis for [Patient Name if available]
     
