@@ -1,10 +1,10 @@
 // components/document/document-chat.tsx
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { useChat } from '@ai-sdk/react';
-import { Send, Loader2, RefreshCw, AlertTriangle } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Send, Loader2, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
+import ReactMarkdown from 'react-markdown';
 
 type Document = {
   id: string;
@@ -16,96 +16,228 @@ type Document = {
 
 export default function DocumentChat({ document }: { document: Document }) {
   const [message, setMessage] = useState('');
-  const [documentContent, setDocumentContent] = useState<string | null>(document.contentText || null);
+  const [documentContent, setDocumentContent] = useState<string | null>(null);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<Array<{role: 'user' | 'assistant', content: string, id: string}>>([]);
+  const [isLoadingResponse, setIsLoadingResponse] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   
-  // Define fetchDocumentContent as a useCallback to avoid dependency issues
-  const fetchDocumentContent = useCallback(async () => {
+  // Generate a unique ID for messages
+  const generateId = () => Math.random().toString(36).substring(2, 11);
+  
+  const fetchDocumentContent = async (forceExtract = false) => {
     setIsLoadingContent(true);
-    setError(null);
-    
     try {
-      const response = await fetch(`/api/documents/extract?id=${document.id}`);
-      
-      if (response.ok) {
-        const data = await response.json();
-        setDocumentContent(data.content);
-        console.log('Document content loaded:', data.content.substring(0, 100) + '...');
-        toast.success('Document content extracted successfully');
+      // For PDFs, use our specialized endpoint
+      if (document.type === 'pdf') {
+        const response = await fetch('/api/documents/pdf-content', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            documentId: document.id,
+            forceExtract
+          }),
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setDocumentContent(data.content);
+          toast.success(`PDF content ${data.source === 'cache' ? 'loaded from cache' : 'extracted successfully'}`);
+        } else {
+          const error = await response.json();
+          toast.error('Failed to extract PDF content: ' + error.error);
+        }
       } else {
-        const errorData = await response.json();
-        const errorMessage = errorData.error || 'Failed to extract document content';
-        setError(errorMessage);
-        toast.error(errorMessage);
+        // For other document types, use the general endpoint
+        const response = await fetch(`/api/documents/extract?id=${document.id}`);
+        if (response.ok) {
+          const data = await response.json();
+          setDocumentContent(data.content);
+          toast.success('Document content extracted successfully');
+        } else {
+          const error = await response.json();
+          toast.error('Failed to extract document content: ' + error.error);
+        }
       }
     } catch (error) {
-      const errorMessage = (error as Error).message || 'Error fetching document content';
-      setError(errorMessage);
-      toast.error(errorMessage);
+      console.error('Error extracting document content:', error);
+      toast.error('Error extracting document content: ' + (error as Error).message);
     } finally {
       setIsLoadingContent(false);
     }
-  }, [document.id]);
+  };
   
-  // Fetch document content on mount if not already available
+  // Fetch document content when component mounts
   useEffect(() => {
-    if (!documentContent) {
-      fetchDocumentContent();
-    }
-  }, [documentContent, fetchDocumentContent]);
+    fetchDocumentContent();
+  }, [document]);
   
-  // Initialize chat with the document content
-  const { messages, append, isLoading } = useChat({
-    id: document.id,
-    body: {
-      documentId: document.id,
-      documentName: document.name,
-      documentContent: documentContent || '',
-    },
-  });
-
-  // Send initial message when content is loaded
+  // Initial message to explain what the user can do
   useEffect(() => {
-    if (documentContent && messages.length === 0) {
-      append({
+    if (chatMessages.length === 0 && documentContent) {
+      setChatMessages([{
         role: 'assistant',
         content: `I've analyzed "${document.name}". What would you like to know about this document?`,
-      });
+        id: generateId()
+      }]);
     }
-  }, [documentContent, messages.length, document.name, append]);
+  }, [document, chatMessages.length, documentContent]);
+  
+  // Scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages]);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Function to process the AI response text
+  const processResponseText = (text: string) => {
+    // Replace escaped newlines with actual newlines
+    let processed = text.replace(/\\n/g, '\n');
+    
+    // Replace "/n" with newlines (if that's what's happening)
+    processed = processed.replace(/\/n/g, '\n');
+    
+    return processed;
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim()) return;
     
-    // Log what's being sent to verify
-    console.log('Sending message with document content:', {
-      message,
-      documentContentLength: documentContent?.length || 0,
-      documentContentPreview: documentContent?.substring(0, 100) + '...' || 'No content'
-    });
+    if (!message.trim() || isLoadingResponse || !documentContent) return;
     
-    append({
-      role: 'user',
-      content: message,
-    }, {
-      body: {
-        documentId: document.id,
-        documentName: document.name,
-        documentContent: documentContent || '',
-      }
-    });
+    // Add user message to chat
+    const userMessageObj = {
+      role: 'user' as const,
+      content: message.trim(),
+      id: generateId()
+    };
     
+    setChatMessages(prev => [...prev, userMessageObj]);
     setMessage('');
+    setIsLoadingResponse(true);
+    
+    try {
+      // Create a new assistant message placeholder
+      const assistantId = generateId();
+      setChatMessages(prev => [...prev, {
+        role: 'assistant',
+        content: '',
+        id: assistantId
+      }]);
+      
+      // Call the chat API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messages: [...chatMessages, userMessageObj].map(m => ({
+            role: m.role,
+            content: m.content
+          })),
+          documentId: document.id,
+          documentType: document.type,
+          documentUrl: document.url,
+          documentName: document.name,
+          documentContent: documentContent,
+        }),
+      });
+      
+      if (!response.ok) {
+        throw new Error(`API responded with status ${response.status}`);
+      }
+      
+      // Handle streaming response
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Response body is not readable');
+      
+      let fullContent = '';
+      
+      // Process the stream
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) break;
+        
+        // Convert the chunk to text
+        const chunk = new TextDecoder().decode(value);
+        
+        // Parse the chunk
+        const lines = chunk.split('\n');
+        for (const line of lines) {
+          if (line.trim() === '') continue;
+          
+          // Check if it's a data line
+          if (line.startsWith('data:')) {
+            const data = line.slice(5).trim();
+            
+            // Check if it's the end of the stream
+            if (data === '[DONE]') continue;
+            
+            try {
+              // Try to parse as JSON
+              const parsed = JSON.parse(data);
+              
+              // Extract the content
+              if (parsed.choices && parsed.choices[0]?.delta?.content) {
+                fullContent += parsed.choices[0].delta.content;
+              } else if (typeof parsed === 'string') {
+                fullContent += parsed;
+              } else if (parsed.content) {
+                fullContent += parsed.content;
+              }
+            } catch (e) {
+              // If it's not JSON, just add the data
+              if (data.startsWith('0:"') && data.endsWith('"')) {
+                // Handle the specific format in your logs
+                fullContent += data.slice(3, -1);
+              } else {
+                fullContent += data;
+              }
+            }
+          } else if (line.startsWith('0:"') && line.endsWith('"')) {
+            // Handle the specific format in your logs
+            fullContent += line.slice(3, -1);
+          }
+        }
+        
+        // Process the content before updating the UI
+        const processedContent = processResponseText(fullContent);
+        
+        // Update the assistant message
+        setChatMessages(prev => 
+          prev.map(msg => 
+            msg.id === assistantId 
+              ? { ...msg, content: processedContent } 
+              : msg
+          )
+        );
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      toast.error('Failed to get a response');
+      
+      // Update the assistant message with an error
+      setChatMessages(prev => 
+        prev.map(msg => 
+          msg.role === 'assistant' && msg.content === '' 
+            ? { ...msg, content: 'Sorry, I encountered an error while processing your request. Please try again.' } 
+            : msg
+        )
+      );
+    } finally {
+      setIsLoadingResponse(false);
+    }
   };
 
   return (
-    <div className="flex flex-col h-[400px]">
+    <div className="flex flex-col h-full">
       <div className="flex justify-between items-center mb-2">
-        <h3 className="text-sm font-medium">Document Chat</h3>
+        <h3 className="text-sm font-medium">Document Content</h3>
         <button
-          onClick={fetchDocumentContent}
+          onClick={() => fetchDocumentContent(true)}
           disabled={isLoadingContent}
           className="text-xs flex items-center text-blue-500 hover:text-blue-700"
         >
@@ -118,25 +250,14 @@ export default function DocumentChat({ document }: { document: Document }) {
         {isLoadingContent ? (
           <div className="text-center text-zinc-500 py-8">
             <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-            <p>Loading document content...</p>
+            <p>Analyzing document content...</p>
           </div>
-        ) : error ? (
-          <div className="text-center text-red-500 py-8">
-            <AlertTriangle className="h-6 w-6 mx-auto mb-2" />
-            <p>Error: {error}</p>
-            <button 
-              onClick={fetchDocumentContent}
-              className="mt-2 text-sm text-blue-500 hover:text-blue-700"
-            >
-              Try Again
-            </button>
-          </div>
-        ) : messages.length === 0 ? (
+        ) : chatMessages.length === 0 ? (
           <div className="text-center text-zinc-500 py-8">
             <p>Ask a question about this document</p>
           </div>
         ) : (
-          messages.map((msg) => (
+          chatMessages.map((msg) => (
             <div 
               key={msg.id} 
               className={`p-3 rounded-lg max-w-[80%] ${
@@ -145,10 +266,27 @@ export default function DocumentChat({ document }: { document: Document }) {
                   : 'bg-zinc-200 dark:bg-zinc-700'
               }`}
             >
-              <p>{msg.content}</p>
+              {msg.role === 'user' ? (
+                // User messages don't need markdown rendering
+                <p className="whitespace-pre-wrap">
+                  {msg.content || (isLoadingResponse ? 'Thinking...' : '')}
+                </p>
+              ) : (
+                // Assistant messages use markdown rendering
+                <div className="prose prose-sm dark:prose-invert max-w-none">
+                  {msg.content ? (
+                    <ReactMarkdown className="whitespace-pre-wrap">
+                      {msg.content}
+                    </ReactMarkdown>
+                  ) : (
+                    isLoadingResponse && 'Thinking...'
+                  )}
+                </div>
+              )}
             </div>
           ))
         )}
+        <div ref={messagesEndRef} />
       </div>
       
       <form onSubmit={handleSubmit} className="flex items-center space-x-2">
@@ -158,14 +296,14 @@ export default function DocumentChat({ document }: { document: Document }) {
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Ask a question about this document..."
           className="flex-1 p-2 border rounded-md bg-transparent"
-          disabled={isLoading || isLoadingContent || !documentContent}
+          disabled={isLoadingResponse || isLoadingContent}
         />
         <button
           type="submit"
-          disabled={isLoading || isLoadingContent || !message.trim() || !documentContent}
+          disabled={isLoadingResponse || isLoadingContent || !message.trim()}
           className="p-2 bg-zinc-900 dark:bg-zinc-100 text-zinc-100 dark:text-zinc-900 rounded-md hover:bg-zinc-800 dark:hover:bg-zinc-200 disabled:opacity-50"
         >
-          {isLoading ? (
+          {isLoadingResponse ? (
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
             <Send className="h-5 w-5" />
@@ -173,23 +311,24 @@ export default function DocumentChat({ document }: { document: Document }) {
         </button>
       </form>
       
-      {/* Debug section to show extracted content */}
       {documentContent && process.env.NODE_ENV === 'development' && (
         <div className="mt-4 p-2 text-xs bg-zinc-50 dark:bg-zinc-800 rounded border max-h-32 overflow-y-auto">
-          <strong>Document Content Preview:</strong>
-          <pre className="whitespace-pre-wrap">{documentContent.slice(0, 300)}...</pre>
+          <strong>Debug - Document Content:</strong>
+          <pre className="whitespace-pre-wrap">{documentContent.slice(0, 500)}...</pre>
         </div>
       )}
     </div>
   );
 }
 
+
+
 // // components/document/document-chat.tsx
 // 'use client';
 
-// import { useState, useEffect, useRef } from 'react';
+// import { useState, useEffect } from 'react';
 // import { useChat } from '@ai-sdk/react';
-// import { Send, Loader2, RefreshCw, AlertTriangle } from 'lucide-react';
+// import { Send, Loader2, RefreshCw } from 'lucide-react';
 // import { toast } from 'sonner';
 
 // type Document = {
@@ -202,47 +341,36 @@ export default function DocumentChat({ document }: { document: Document }) {
 
 // export default function DocumentChat({ document }: { document: Document }) {
 //   const [message, setMessage] = useState('');
-//   const [documentContent, setDocumentContent] = useState<string | null>(document.contentText || null);
+//   const [documentContent, setDocumentContent] = useState<string | null>(null);
 //   const [isLoadingContent, setIsLoadingContent] = useState(false);
-//   const [error, setError] = useState<string | null>(null);
-//   const chatInitialized = useRef(false);
   
 //   const fetchDocumentContent = async () => {
 //     setIsLoadingContent(true);
-//     setError(null);
-    
 //     try {
 //       const response = await fetch(`/api/documents/extract?id=${document.id}`);
       
 //       if (response.ok) {
 //         const data = await response.json();
 //         setDocumentContent(data.content);
-//         console.log('Document content loaded:', data.content.substring(0, 100) + '...');
-//         toast.success('Document content extracted successfully');
+//         toast.success('Document content extracted');
 //       } else {
-//         const errorData = await response.json();
-//         const errorMessage = errorData.error || 'Failed to extract document content';
-//         setError(errorMessage);
-//         toast.error(errorMessage);
+//         const error = await response.json();
+//         toast.error('Failed to extract content: ' + error.error);
 //       }
 //     } catch (error) {
-//       const errorMessage = (error as Error).message || 'Error fetching document content';
-//       setError(errorMessage);
-//       toast.error(errorMessage);
+//       console.error('Error:', error);
+//       toast.error('Error extracting content');
 //     } finally {
 //       setIsLoadingContent(false);
 //     }
 //   };
   
-//   // Fetch document content on mount if not already available
+//   // Fetch document content on mount
 //   useEffect(() => {
-//     if (!documentContent) {
-//       fetchDocumentContent();
-//     }
-//   }, [document.id, documentContent]);
+//     fetchDocumentContent();
+//   }, [document.id]);
   
-//   // Initialize chat with the document content
-//   const { messages, append, isLoading, reload } = useChat({
+//   const { messages, append, isLoading } = useChat({
 //     id: document.id,
 //     body: {
 //       documentId: document.id,
@@ -253,8 +381,7 @@ export default function DocumentChat({ document }: { document: Document }) {
 
 //   // Send initial message when content is loaded
 //   useEffect(() => {
-//     if (documentContent && messages.length === 0 && !chatInitialized.current) {
-//       chatInitialized.current = true;
+//     if (documentContent && messages.length === 0) {
 //       append({
 //         role: 'assistant',
 //         content: `I've analyzed "${document.name}". What would you like to know about this document?`,
@@ -266,22 +393,9 @@ export default function DocumentChat({ document }: { document: Document }) {
 //     e.preventDefault();
 //     if (!message.trim()) return;
     
-//     // Log what's being sent to verify
-//     console.log('Sending message with document content:', {
-//       message,
-//       documentContentLength: documentContent?.length || 0,
-//       documentContentPreview: documentContent?.substring(0, 100) + '...' || 'No content'
-//     });
-    
 //     append({
 //       role: 'user',
 //       content: message,
-//     }, {
-//       body: {
-//         documentId: document.id,
-//         documentName: document.name,
-//         documentContent: documentContent || '',
-//       }
 //     });
     
 //     setMessage('');
@@ -306,17 +420,6 @@ export default function DocumentChat({ document }: { document: Document }) {
 //           <div className="text-center text-zinc-500 py-8">
 //             <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
 //             <p>Loading document content...</p>
-//           </div>
-//         ) : error ? (
-//           <div className="text-center text-red-500 py-8">
-//             <AlertTriangle className="h-6 w-6 mx-auto mb-2" />
-//             <p>Error: {error}</p>
-//             <button 
-//               onClick={fetchDocumentContent}
-//               className="mt-2 text-sm text-blue-500 hover:text-blue-700"
-//             >
-//               Try Again
-//             </button>
 //           </div>
 //         ) : messages.length === 0 ? (
 //           <div className="text-center text-zinc-500 py-8">

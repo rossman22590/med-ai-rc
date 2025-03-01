@@ -4,9 +4,10 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FileText, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { FileText, Image as ImageIcon, Loader2, Trash, AlertCircle } from 'lucide-react';
 import { useAuth } from '@clerk/nextjs';
 import DocumentUploader from '@/components/document/document-uploader';
+import { toast } from 'sonner';
 
 type Document = {
   id: string;
@@ -19,6 +20,7 @@ export default function DocumentsPage() {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
   
@@ -30,32 +32,73 @@ export default function DocumentsPage() {
   }, [isLoaded, isSignedIn, router]);
   
   // Fetch documents
+  const fetchDocuments = async () => {
+    try {
+      setLoading(true);
+      
+      // Use fetch to get the documents
+      const response = await fetch('/api/documents');
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch documents');
+      }
+      
+      const data = await response.json();
+      setDocuments(data.documents);
+    } catch (err) {
+      console.error('Error fetching documents:', err);
+      setError('Failed to load documents. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  };
+  
   useEffect(() => {
     if (!isSignedIn) return;
-    
-    const fetchDocuments = async () => {
-      try {
-        setLoading(true);
-        
-        // Use fetch to get the documents
-        const response = await fetch('/api/documents');
-        
-        if (!response.ok) {
-          throw new Error('Failed to fetch documents');
-        }
-        
-        const data = await response.json();
-        setDocuments(data.documents);
-      } catch (err) {
-        console.error('Error fetching documents:', err);
-        setError('Failed to load documents. Please try again.');
-      } finally {
-        setLoading(false);
-      }
-    };
-    
     fetchDocuments();
   }, [isSignedIn]);
+  
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    // Prevent the click from navigating to the document page
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Show a more detailed confirmation message
+    if (!confirm('Are you sure you want to delete this document? If this document is used in any reports, you need to remove those references first.')) {
+      return;
+    }
+    
+    setDeletingId(id);
+    
+    try {
+      const response = await fetch(`/api/documents/${id}`, {
+        method: 'DELETE',
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        // Handle foreign key constraint error specifically
+        if (data.error && data.error.includes('foreign key constraint')) {
+          throw new Error('This document is used in one or more reports. Please remove those references first before deleting.');
+        } else {
+          throw new Error(data.error || 'Failed to delete document');
+        }
+      }
+      
+      toast.success('Document deleted successfully');
+      // Update the documents list after successful deletion
+      setDocuments(documents.filter(doc => doc.id !== id));
+    } catch (error) {
+      console.error('Error deleting document:', error);
+      toast.error(`${(error as Error).message}`, {
+        duration: 5000,
+        icon: <AlertCircle className="h-5 w-5 text-red-500" />
+      });
+    } finally {
+      setDeletingId(null);
+    }
+  };
   
   // Show loading state
   if (!isLoaded || loading) {
@@ -92,7 +135,7 @@ export default function DocumentsPage() {
           </p>
         </div>
         
-        <DocumentUploader onUploadComplete={() => window.location.reload()} />
+        <DocumentUploader onUploadComplete={fetchDocuments} />
         
         <div className="mt-8">
           <h2 className="text-xl font-semibold mb-4">Your Documents</h2>
@@ -107,12 +150,14 @@ export default function DocumentsPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {documents.map((doc) => (
-                <Link
+                <div
                   key={doc.id}
-                  href={`/documents/${doc.id}`}
-                  className="block border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
+                  className="relative border rounded-lg overflow-hidden hover:shadow-md transition-shadow"
                 >
-                  <div className="p-4">
+                  <Link
+                    href={`/documents/${doc.id}`}
+                    className="block p-4"
+                  >
                     <div className="flex items-center mb-3">
                       {doc.type === 'pdf' ? (
                         <div className="bg-blue-100 dark:bg-blue-900 p-2 rounded-md">
@@ -130,8 +175,20 @@ export default function DocumentsPage() {
                         </p>
                       </div>
                     </div>
-                  </div>
-                </Link>
+                  </Link>
+                  <button
+                    onClick={(e) => handleDelete(e, doc.id)}
+                    disabled={deletingId === doc.id}
+                    className="absolute top-3 right-3 p-2 text-zinc-400 hover:text-red-500 transition-colors bg-white dark:bg-zinc-800 rounded-full"
+                    aria-label="Delete document"
+                  >
+                    {deletingId === doc.id ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <Trash className="h-5 w-5" />
+                    )}
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -140,6 +197,7 @@ export default function DocumentsPage() {
     </div>
   );
 }
+
 
 // // app/documents/page.tsx
 // import { Metadata } from 'next';

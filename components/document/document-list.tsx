@@ -2,8 +2,9 @@
 'use client';
 
 import { useState } from 'react';
-import { FileText, Trash, Loader2 } from 'lucide-react';
+import { FileText, Trash, Loader2, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
+import Link from 'next/link';
 
 type Document = {
   id: string;
@@ -23,8 +24,13 @@ interface DocumentListProps {
 export default function DocumentList({ documents, onDeleteComplete }: DocumentListProps) {
   const [deletingId, setDeletingId] = useState<string | null>(null);
   
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this document?')) {
+  const handleDelete = async (e: React.MouseEvent, id: string) => {
+    // Prevent the click from navigating to the document page
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Show a more detailed confirmation message
+    if (!confirm('Are you sure you want to delete this document? If this document is used in any reports, you need to remove those references first.')) {
       return;
     }
     
@@ -35,8 +41,15 @@ export default function DocumentList({ documents, onDeleteComplete }: DocumentLi
         method: 'DELETE',
       });
       
+      const data = await response.json();
+      
       if (!response.ok) {
-        throw new Error('Failed to delete document');
+        // Handle foreign key constraint error specifically
+        if (data.error && data.error.includes('foreign key constraint')) {
+          throw new Error('This document is used in one or more reports. Please remove those references first before deleting.');
+        } else {
+          throw new Error(data.error || 'Failed to delete document');
+        }
       }
       
       toast.success('Document deleted successfully');
@@ -46,7 +59,10 @@ export default function DocumentList({ documents, onDeleteComplete }: DocumentLi
       }
     } catch (error) {
       console.error('Error deleting document:', error);
-      toast.error('Failed to delete document');
+      toast.error(`${(error as Error).message}`, {
+        duration: 5000,
+        icon: <AlertCircle className="h-5 w-5 text-red-500" />
+      });
     } finally {
       setDeletingId(null);
     }
@@ -63,39 +79,44 @@ export default function DocumentList({ documents, onDeleteComplete }: DocumentLi
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       {documents.map((doc) => (
-        <div 
-          key={doc.id} 
-          className="border rounded-lg p-4 bg-white dark:bg-zinc-800"
-        >
-          <div className="flex justify-between">
-            <div className="flex items-start space-x-3">
-              <div className="p-2 bg-zinc-100 dark:bg-zinc-700 rounded-md">
-                <FileText className="h-5 w-5 text-zinc-500" />
-              </div>
-              <div>
-                <h3 className="font-medium">{doc.name}</h3>
-                <p className="text-sm text-zinc-500">
-                  {new Date(doc.createdAt).toLocaleDateString()}
-                </p>
+        <div key={doc.id} className="border rounded-lg p-4 bg-white dark:bg-zinc-800 hover:shadow-md transition-shadow relative">
+          <Link 
+            href={`/documents/${doc.id}`}
+            className="block"
+          >
+            <div className="flex justify-between">
+              <div className="flex items-start space-x-3">
+                <div className="p-2 bg-zinc-100 dark:bg-zinc-700 rounded-md">
+                  <FileText className="h-5 w-5 text-zinc-500" />
+                </div>
+                <div>
+                  <h3 className="font-medium">{doc.name}</h3>
+                  <p className="text-sm text-zinc-500">
+                    {new Date(doc.createdAt).toLocaleDateString()}
+                  </p>
+                  <p className="text-xs text-zinc-400">ID: {doc.id}</p>
+                </div>
               </div>
             </div>
-            <button
-              onClick={() => handleDelete(doc.id)}
-              disabled={deletingId === doc.id}
-              className="text-zinc-400 hover:text-red-500 transition-colors"
-            >
-              {deletingId === doc.id ? (
-                <Loader2 className="h-5 w-5 animate-spin" />
-              ) : (
-                <Trash className="h-5 w-5" />
-              )}
-            </button>
-          </div>
+          </Link>
+          <button
+            onClick={(e) => handleDelete(e, doc.id)}
+            disabled={deletingId === doc.id}
+            className="absolute top-4 right-4 text-zinc-400 hover:text-red-500 transition-colors p-2"
+            aria-label="Delete document"
+          >
+            {deletingId === doc.id ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <Trash className="h-5 w-5" />
+            )}
+          </button>
         </div>
       ))}
     </div>
   );
 }
+
 
 // // components/document/document-list.tsx
 // 'use client';

@@ -4,7 +4,7 @@
 import { useParams } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import Image from 'next/image'; // Import Next.js Image component
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, FileText, Image as ImageIcon, Loader2 } from 'lucide-react';
 import { useAuth } from '@clerk/nextjs';
@@ -28,6 +28,11 @@ export default function DocumentPage() {
   const router = useRouter();
   const { isLoaded, isSignedIn } = useAuth();
   
+  // Log the document ID from URL params
+  useEffect(() => {
+    console.log(`Document page loaded with ID from URL: ${id}`);
+  }, [id]);
+  
   // Check authentication
   useEffect(() => {
     if (isLoaded && !isSignedIn) {
@@ -42,23 +47,33 @@ export default function DocumentPage() {
     const fetchDocument = async () => {
       try {
         setLoading(true);
+        console.log(`Fetching document with ID: ${id}`);
         
         // Use fetch to get the document
         const response = await fetch(`/api/documents/${id}`);
         
         if (!response.ok) {
+          console.error(`Error fetching document ${id}: ${response.status}`);
           if (response.status === 404) {
             router.push('/documents');
             return;
           }
-          throw new Error('Failed to fetch document');
+          throw new Error(`Failed to fetch document: ${response.status}`);
         }
         
         const data = await response.json();
-        setDocument(data.document);
+        console.log(`Document fetched:`, data.document);
+        
+        // Verify that the fetched document ID matches the requested ID
+        if (data.document.id !== id) {
+          console.error(`ID mismatch: Requested ${id} but got ${data.document.id}`);
+          setError(`ID mismatch: Requested ${id} but got ${data.document.id}`);
+        } else {
+          setDocument(data.document);
+        }
       } catch (err) {
         console.error('Error fetching document:', err);
-        setError('Failed to load document. Please try again.');
+        setError(`Failed to load document: ${(err as Error).message}`);
       } finally {
         setLoading(false);
       }
@@ -72,7 +87,7 @@ export default function DocumentPage() {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen">
         <Loader2 className="h-8 w-8 animate-spin text-zinc-500 mb-4" />
-        <p className="text-zinc-500">Loading document...</p>
+        <p className="text-zinc-500">Loading document {id}...</p>
       </div>
     );
   }
@@ -96,7 +111,7 @@ export default function DocumentPage() {
   if (!document) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen">
-        <p className="text-zinc-500 mb-4">Document not found</p>
+        <p className="text-zinc-500 mb-4">Document not found: {id}</p>
         <Link 
           href="/documents" 
           className="text-blue-500 hover:underline"
@@ -107,7 +122,7 @@ export default function DocumentPage() {
     );
   }
   
-  // Show document
+  // Show document with side-by-side layout
   return (
     <div className="container mx-auto px-4 py-8 pt-20">
       <Link 
@@ -125,38 +140,47 @@ export default function DocumentPage() {
           <ImageIcon className="h-6 w-6 text-green-500 mr-2" />
         )}
         <h1 className="text-2xl font-bold">{document.name}</h1>
+        <span className="ml-4 text-sm text-zinc-500">ID: {document.id}</span>
       </div>
       
-      <div className="bg-white dark:bg-zinc-900 rounded-lg border p-6">
-        {document.type === 'pdf' ? (
-          <iframe 
-            src={document.url} 
-            className="w-full h-[70vh]" 
-            title={document.name}
-          />
-        ) : (
-          <div className="flex justify-center relative h-[70vh]">
-            {/* Using Next.js Image component with proper configuration for data URLs */}
-            <div className="relative w-full h-full">
-              <Image 
-                src={document.url}
-                alt={document.name}
-                fill
-                className="object-contain"
-                unoptimized={document.url.startsWith('data:')} // Skip optimization for data URLs
+      {/* Side-by-side layout for document and chat */}
+      <div className="flex flex-col lg:flex-row gap-6">
+        {/* Document viewer */}
+        <div className="lg:w-1/2 bg-white dark:bg-zinc-900 rounded-lg border p-4">
+          <h2 className="text-xl font-semibold mb-4">Document</h2>
+          <div className="h-[calc(100vh-240px)]">
+            {document.type === 'pdf' ? (
+              <iframe 
+                src={document.url} 
+                className="w-full h-full" 
+                title={document.name}
               />
-            </div>
+            ) : (
+              <div className="relative w-full h-full">
+                <Image 
+                  src={document.url}
+                  alt={document.name}
+                  fill
+                  className="object-contain"
+                  unoptimized={document.url.startsWith('data:')}
+                />
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      
-      <div className="mt-8 bg-white dark:bg-zinc-900 rounded-lg border p-6">
-        <h2 className="text-xl font-semibold mb-4">Chat with this document</h2>
-        <DocumentChat document={document} />
+        </div>
+        
+        {/* Chat section */}
+        <div className="lg:w-1/2 bg-white dark:bg-zinc-900 rounded-lg border p-4">
+          <h2 className="text-xl font-semibold mb-4">Chat with this document</h2>
+          <div className="h-[calc(100vh-240px)]">
+            <DocumentChat document={document} />
+          </div>
+        </div>
       </div>
     </div>
   );
 }
+
 
 // // app/documents/[id]/page.tsx
 // 'use client';
